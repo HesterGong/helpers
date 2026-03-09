@@ -108,29 +108,46 @@ make_body() {
     '{operationName: "createApplication", query: $query, variables: $variables}'
 }
 
-echo "Request 1:"
+check_lobtype() {
+  local app_id="$1"
+  local expected_lob="${2:-}"
+  local actual_lob
+  actual_lob=$(mongosh "mongodb://127.0.0.1:27017/foxcom" --quiet --eval \
+    "var doc = db.Application.findOne({_id: ObjectId('$app_id')}); if (doc) { print(doc.data.lobType); }")
+  if [ "$actual_lob" = "$expected_lob" ]; then
+    echo "[OK] lobType='$actual_lob'"
+  else
+    echo "[FAIL] expected lobType='$expected_lob', got lobType='$actual_lob'"
+  fi
+}
+
+echo "Request 1 (expect lobType='' in DB after create):"
 RESPONSE1=$(curl -s -X POST "$ENDPOINT" \
   -H "content-type: application/json" \
   -H "accept: */*" \
   --data "$(make_body "$APPLICATION_GROUP_ID")")
 echo "$RESPONSE1" | jq .
+APP_ID1=$(echo "$RESPONSE1" | jq -r '.data.createApplication.applicationId // empty')
+[ -n "$APP_ID1" ] && check_lobtype "$APP_ID1" ""
 
 if $DOUBLE; then
-  APP_ID=$(echo "$RESPONSE1" | jq -r '.data.createApplication.applicationId // empty')
-  if [ -z "$APP_ID" ]; then
+  if [ -z "$APP_ID1" ]; then
     echo "Error: could not extract applicationId from first response"
     exit 1
   fi
   RETURNED_GROUP_ID=$(mongosh "mongodb://127.0.0.1:27017/foxcom" --quiet --eval \
-    "var doc = db.ApplicationGroup.findOne({'data.applicationIds': ObjectId('$APP_ID')}); if (doc) { print(doc._id.toHexString()); }")
+    "var doc = db.ApplicationGroup.findOne({'data.applicationIds': ObjectId('$APP_ID1')}); if (doc) { print(doc._id.toHexString()); }")
   if [ -z "$RETURNED_GROUP_ID" ] || [ "$RETURNED_GROUP_ID" = "null" ]; then
-    echo "Error: could not find applicationGroupId in DB for applicationId=$APP_ID"
+    echo "Error: could not find applicationGroupId in DB for applicationId=$APP_ID1"
     exit 1
   fi
   echo "---"
-  echo "Request 2 (applicationGroupId=$RETURNED_GROUP_ID):"
-  curl -s -X POST "$ENDPOINT" \
+  echo "Request 2 (applicationGroupId=$RETURNED_GROUP_ID → expect lobType='' in DB):"
+  RESPONSE2=$(curl -s -X POST "$ENDPOINT" \
     -H "content-type: application/json" \
     -H "accept: */*" \
-    --data "$(make_body "$RETURNED_GROUP_ID")" | jq .
+    --data "$(make_body "$RETURNED_GROUP_ID")")
+  echo "$RESPONSE2" | jq .
+  APP_ID2=$(echo "$RESPONSE2" | jq -r '.data.createApplication.applicationId // empty')
+  [ -n "$APP_ID2" ] && check_lobtype "$APP_ID2" ""
 fi

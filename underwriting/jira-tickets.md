@@ -246,10 +246,18 @@ Story Points: 4
 
 Issue Type: Story
 Epic Link: Multi-LOBs-Underwriting Shell (Container) App implementation
-Summary: A4 — Add lobType to Application document
-Description: Add a required `lobType: string` field to `ApplicationData` in `foxden-data` and thread it through the `createApplication` service. All Application documents — past and future — must have this field. A migration backfills `'GL'` on all existing documents (all historical applications are GL). Going forward, the service always writes `lobType`, defaulting to `'GL'` when the caller does not supply it, so no existing GraphQL callers break.
+Summary: A4 — Add lobType to Application document ✅ COMPLETED
+Description: Add `lobType` to `ApplicationData` in `foxden-data` so every Application document carries the field. New applications are created with `lobType: ''` and have it set later via `updateApplication`. A migration backfills `'GL'` on all historical documents.
 
-**Sample resulting Application document:**
+**How it works:**
+
+- `createApplication` always writes `lobType: ''` — the field is present from creation but starts empty. No `lobType` param on the mutation.
+- A new internal service `setLobType` validates the value via `z.nativeEnum(LobType)` and updates `data.lobType` via `$set`. It is **not** a GraphQL entry point — no resolver, no mutation.
+- `updateApplication` gains an optional `lobType: String` GraphQL arg. When provided, it calls `setLobType` internally before returning.
+- The survey JSON sets `lobType` as a model variable (e.g. `'GL'`) via a trigger/expression. The frontend reads it via `model.getVariable('lobType')` in `CommercialSurveyWithApplicationId` and passes it to `updateApplicationMutation` when truthy — same pattern as `carrierPartner`. This keeps `lobType` driven by survey config, not URL params.
+- A migration backfills `'GL'` on all existing documents.
+
+**Sample Application document after `updateApplication` with `lobType: 'GL'`:**
 ```json
 {
   "documentName": "Application",
@@ -264,36 +272,32 @@ Description: Add a required `lobType: string` field to `ApplicationData` in `fox
 }
 ```
 
-**Changes across repos:**
-
-1. **`foxden-data/src/applications.ts`**
-   - Add `lobType: string` (required, no `?`) to `ApplicationData` interface.
-   - Rebuild and publish a **minor** version bump (breaking TypeScript change for consumers that construct `ApplicationData` directly — those callers must add `lobType`).
-
-2. **`foxcom-forms-backend`**
-   - SDL (`src/models/graphql/applicationAnswers.ts`): add `lobType: String` as an **optional** GraphQL arg to `createApplication` — keeping the API backward compatible at the GraphQL level.
-   - Service (`src/services/mutation/createApplication.ts`): destructure `lobType` from `MutationCreateApplicationArgs`; always write it with a `'GL'` default: `lobType: lobType ?? 'GL'` spread into `applicationCommonData`.
-   - Run `yarn build:graphql:underwriting` to regenerate `MutationCreateApplicationArgs` with the new field.
-   - Bump dependency on `@foxden/data` to the version that includes the required `lobType` field.
-   - **Migration** (`src/migrate-mongo/migrations/<timestamp>-backfill-lobtype-on-application.js`): update all `Application` documents that are missing `lobType`, setting `data.lobType = 'GL'` (all historical applications are GL). Run via `migrate-mongo up` before or alongside deploy.
-
-3. **Frontend (B4 — done in that ticket, not here)**
-   - When calling `createApplication` for each per-LOB application inside LobShell (LOB selection step), pass the appropriate `lobType` (e.g. `'EO'`). The base GL call in CommercialSurvey (B1/B2) defaults to `'GL'`.
-   - The base `createApplication` call in CommercialSurvey (B1/B2) does **not** need to change — the service defaults to `'GL'` when `lobType` is absent from the GraphQL args.
-
 Acceptance Criteria:
-- `createApplication` called with `lobType: "GL"` stores `{ ..., lobType: "GL" }` in `data` of the Application document.
-- `createApplication` called **without** `lobType` also stores `lobType: "GL"` (service default) — no document is written without the field.
-- Migration: after `migrate-mongo up`, zero `Application` documents in any environment are missing `data.lobType`.
-- Codegen succeeds: `MutationCreateApplicationArgs` includes `lobType?: InputMaybe<Scalars['String']>` (optional at GraphQL layer).
-- No existing GraphQL callers break — `lobType` remains optional in the SDL.
-- `ApplicationData` TypeScript consumers that construct the type directly must add `lobType` (covered by downstream compile check after version bump).
+- `createApplication` stores `lobType: ''` — field always present, no caller passes it.
+- `updateApplication` with `lobType: "GL"` updates `data.lobType` on the existing document.
+- `updateApplication` without `lobType` leaves `data.lobType` unchanged.
+- Migration: after `migrate-mongo up`, zero Application documents are missing `data.lobType`.
+- No existing GraphQL callers of `createApplication` or `updateApplication` break.
+
+Completion Notes:
+- `foxden-data`: `lobType: LobType` required on `ApplicationData` (already published).
+- SDL: `lobType` removed from `createApplication`; added as optional `String` to `updateApplication`.
+- New internal service `src/services/mutation/setLobType.ts`: validates via `z.nativeEnum(LobType)`, `$set: { 'data.lobType': enumLobType }`. No resolver.
+- `src/services/mutation/createApplication.ts`: `enumLobType = '' as LobType` hardcoded.
+- `src/services/mutation/updateApplication.ts`: optional `lobType` param; calls `setLobType` when truthy.
+- Generated types updated: `underwriting.ts`, `underwriting-mongodb.ts`.
+- Migration: `src/migrate-mongo/migrations/20260304000000-backfill-lobtype-on-application.js`.
+- Test fixture `expectedApplicationData.lobType` → `''`; two stale lobType tests removed from `createApplication.test.ts`.
+- Frontend wiring (pending — when survey JSON is updated): read `model.getVariable('lobType')` in `switchToNextPage`, spread into `updateApplicationMutation` variables when truthy.
+
 References:
  - ApplicationData type (foxden-data): https://github.com/Foxquilt/foxden-data/blob/master/src/applications.ts
- - createApplication SDL (foxcom-forms-backend): https://github.com/Foxquilt/foxcom-forms-backend/blob/master/src/models/graphql/applicationAnswers.ts
- - createApplication service (foxcom-forms-backend): https://github.com/Foxquilt/foxcom-forms-backend/blob/master/src/services/mutation/createApplication.ts
- - Migration (new): https://github.com/Foxquilt/foxcom-forms-backend/blob/master/src/migrate-mongo/migrations/<timestamp>-backfill-lobtype-on-application.js
- - Frontend caller (B4 — LobShell LOB selection): https://github.com/Foxquilt/foxcom-forms/blob/master/src/pages/LobShell/LobShell.tsx
+ - SDL: https://github.com/Foxquilt/foxcom-forms-backend/blob/master/src/models/graphql/applicationAnswers.ts
+ - createApplication service: https://github.com/Foxquilt/foxcom-forms-backend/blob/master/src/services/mutation/createApplication.ts
+ - setLobType service (new, internal): https://github.com/Foxquilt/foxcom-forms-backend/blob/master/src/services/mutation/setLobType.ts
+ - updateApplication service: https://github.com/Foxquilt/foxcom-forms-backend/blob/master/src/services/mutation/updateApplication.ts
+ - Migration: https://github.com/Foxquilt/foxcom-forms-backend/blob/master/src/migrate-mongo/migrations/20260304000000-backfill-lobtype-on-application.js
+ - Frontend survey component: https://github.com/Foxquilt/foxcom-forms/blob/master/src/pages/CommercialWithApplicationId/CommercialSurveyWithApplicationId/index.tsx
 Labels: backend, foxden-data, migration, A4
 Story Points: 3
 
